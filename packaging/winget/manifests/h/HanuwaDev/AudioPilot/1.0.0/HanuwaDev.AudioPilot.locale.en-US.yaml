@@ -1,0 +1,22 @@
+PackageIdentifier: HanuwaDev.AudioPilot
+PackageVersion: 1.0.0
+PackageLocale: en-US
+Publisher: Hanuwa
+PublisherUrl: https://github.com/HanuwaDev
+PublisherSupportUrl: https://github.com/HanuwaDev/AudioPilot/issues
+PackageName: AudioPilot
+PackageUrl: https://github.com/HanuwaDev/AudioPilot
+License: MIT
+LicenseUrl: https://github.com/HanuwaDev/AudioPilot/blob/main/LICENSE
+Copyright: Copyright (c) 2026 Hanuwa
+ShortDescription: Audio switcher with hotkeys, mixers, routines, and profiles for Windows.
+Moniker: audiopilot
+Tags:
+- audio
+- hotkeys
+- mixer
+- profiles
+- routines
+- sound
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0

@@ -1,0 +1,153 @@
+<Wix
+  xmlns="http://wixtoolset.org/schemas/v4/wxs"
+  xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+  xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package
+    Name="$(var.ProductName)"
+    Manufacturer="$(var.ManufacturerName)"
+    Version="$(var.AppVersion)"
+    UpgradeCode="$(var.UpgradeCode)"
+    Scope="perUser"
+    InstallerVersion="500">
+
+    <SummaryInformation
+      Description="$(var.ProductName)"
+      Manufacturer="$(var.ManufacturerName)" />
+
+    <Launch
+      Condition="Installed OR VersionNT64"
+      Message="$(var.ProductName) requires a compatible 64-bit version of Windows." />
+
+    <Icon Id="AppIcon.ico" SourceFile="..\AudioPilot\Images\sound.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+    <Property Id="ARPCONTACT" Value="Hanuwa" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/HanuwaDev/AudioPilot" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/HanuwaDev/AudioPilot" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Launch AudioPilot" />
+    <Property Id="WixAppFolder" Value="WixPerUserFolder" />
+    <Property Id="AUDIOPILOT_APPDATA_FOLDER">
+      <RegistrySearch
+        Id="SearchAudioPilotAppDataFolder"
+        Root="HKCU"
+        Key="Software\$(var.ManufacturerName)\$(var.ProductName)"
+        Name="AppDataFolder"
+        Type="raw" />
+    </Property>
+
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+
+    <UI>
+      <ui:WixUI Id="WixUI_InstallDir" />
+      <Publish
+        Dialog="ExitDialog"
+        Control="Finish"
+        Event="DoAction"
+        Value="LaunchApplication"
+        Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed"
+        Order="2" />
+    </UI>
+
+    <SetProperty Id="WixUnelevatedShellExecTarget" Value="[INSTALLFOLDER]AudioPilot.exe" After="ExecuteAction" Sequence="ui" />
+    <CustomAction Id="LaunchApplication" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixUnelevatedShellExec" Execute="immediate" Return="ignore" />
+    <SetProperty
+      Id="WixQuietExecCmdLine"
+      Value="&quot;[%ComSpec]&quot; /c reg delete &quot;HKCU\Software\Microsoft\Windows\CurrentVersion\Run&quot; /v &quot;$(var.ProductName)&quot; /f &gt;nul 2&gt;&amp;1 &amp; exit /b 0"
+      Before="CleanupStartupRunValue"
+      Sequence="execute" />
+    <CustomAction
+      Id="CleanupStartupRunValue"
+      BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+      DllEntry="WixQuietExec"
+      Execute="immediate"
+      Return="ignore" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of $(var.ProductName) is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <InstallExecuteSequence>
+      <Custom Action="CleanupStartupRunValue" Before="RemoveRegistryValues" Condition='REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE' />
+    </InstallExecuteSequence>
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLFOLDER" Name="AudioPilot" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="$(var.ProductName)" />
+    </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder">
+      <Component Id="DesktopShortcutComponent" Guid="*">
+        <Shortcut
+          Id="DesktopShortcut"
+          Name="$(var.ProductName)"
+          Description="$(var.ProductName)"
+          Target="[INSTALLFOLDER]AudioPilot.exe"
+          WorkingDirectory="INSTALLFOLDER"
+          Icon="AppIcon.ico"
+          Advertise="no" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\$(var.ManufacturerName)\$(var.ProductName)"
+          Name="DesktopShortcut"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <DirectoryRef Id="ApplicationProgramsFolder">
+      <Component Id="StartMenuShortcutComponent" Guid="*">
+        <Shortcut
+          Id="StartMenuShortcut"
+          Name="$(var.ProductName)"
+          Description="$(var.ProductName)"
+          Target="[INSTALLFOLDER]AudioPilot.exe"
+          WorkingDirectory="INSTALLFOLDER"
+          Icon="AppIcon.ico"
+          Advertise="no" />
+        <Shortcut
+          Id="UninstallShortcut"
+          Name="Uninstall $(var.ProductName)"
+          Description="Uninstall $(var.ProductName)"
+          Target="[SystemFolder]msiexec.exe"
+          Arguments="/x [ProductCode]"
+          Icon="AppIcon.ico"
+          Advertise="no" />
+        <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\$(var.ManufacturerName)\$(var.ProductName)"
+          Name="StartMenuShortcut"
+          Type="integer"
+          Value="1"
+          KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="AppDataCleanupComponent" Guid="*">
+        <RegistryValue
+          Root="HKCU"
+          Key="Software\$(var.ManufacturerName)\$(var.ProductName)"
+          Name="AppDataFolder"
+          Type="string"
+          Value="[LocalAppDataFolder]$(var.ProductName)"
+          KeyPath="yes" />
+        <RemoveRegistryKey
+          Id="RemoveAudioPilotUserRegistryKey"
+          Root="HKCU"
+          Key="Software\$(var.ManufacturerName)\$(var.ProductName)"
+          Action="removeOnUninstall" />
+        <util:RemoveFolderEx
+          Id="RemoveAppDataFolderOnUninstall"
+          Property="AUDIOPILOT_APPDATA_FOLDER"
+          On="uninstall" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="MainFeature" Title="$(var.ProductName)" Level="1">
+      <ComponentGroupRef Id="GeneratedPublishFiles" />
+      <ComponentRef Id="AppDataCleanupComponent" />
+      <ComponentRef Id="StartMenuShortcutComponent" />
+      <ComponentRef Id="DesktopShortcutComponent" />
+    </Feature>
+  </Package>
+</Wix>

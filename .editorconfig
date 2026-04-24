@@ -1,0 +1,15 @@
+root = true
+
+[*]
+insert_final_newline = true
+
+[*.cs]
+indent_style = space
+indent_size = 4
+trim_trailing_whitespace = true
+dotnet_sort_system_directives_first = true
+dotnet_diagnostic.IDE0001.severity = warning
+dotnet_diagnostic.IDE0028.severity = warning
+
+[*.md]
+trim_trailing_whitespace = false

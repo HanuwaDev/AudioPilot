@@ -1,0 +1,107 @@
+using System.IO.Compression;
+using AudioPilot.Constants;
+using AudioPilot.Logging;
+using AudioPilot.Tests.Helpers;
+using Newtonsoft.Json.Linq;
+
+namespace AudioPilot.Tests.Logging;
+
+public sealed class DiagnosticBundleExportServiceTests
+{
+    [Fact]
+    public void ExportBundle_RedactedMode_WritesDeterministicEntriesAndSanitizesLogs()
+    {
+        using var directory = new TestScopedDirectory(nameof(ExportBundle_RedactedMode_WritesDeterministicEntriesAndSanitizesLogs));
+        string logPath = Path.Combine(directory.Root, AppConstants.Files.LogFileName);
+        string backupDirectory = Path.Combine(directory.Root, AppConstants.Files.BackupFolderName);
+        Directory.CreateDirectory(backupDirectory);
+        File.WriteAllText(logPath, @"Opened C:\Users\Arman\My Music\track.mp3 and \\nas\Media Library\mix.flac for routine 'Office WiFi'.");
+        File.WriteAllText(Path.Combine(backupDirectory, AppConstants.Files.LogFileName + ".bak1"), "backup log");
+
+        string zipPath = Path.Combine(directory.Root, "bundle.zip");
+        DiagnosticBundleExportResult result = DiagnosticBundleExportService.ExportBundle(directory.Root, zipPath, CreatePayloads(), includeSensitive: false);
+
+        Assert.False(result.IncludeSensitive);
+        Assert.False(result.PartialExport);
+        Assert.True(File.Exists(zipPath));
+
+        using ZipArchive archive = ZipFile.OpenRead(zipPath);
+        string[] names = [.. archive.Entries.Select(static entry => entry.FullName)];
+        Assert.Equal(
+            [
+                "diagnostics/status.json",
+                "diagnostics/history.json",
+                "diagnostics/media-status.json",
+                "diagnostics/config-validation.json",
+                "README.txt",
+                "logs/AudioPilot.log",
+                "logs/backups/AudioPilot.log.bak1",
+                "manifest.json",
+            ],
+            names);
+
+        string logContent = ReadEntry(archive, "logs/AudioPilot.log");
+        Assert.Contains("<path>", logContent, StringComparison.Ordinal);
+        Assert.DoesNotContain(@"C:\Users\Arman", logContent, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("My Music", logContent, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(@"\\nas\Media Library", logContent, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Office WiFi", logContent, StringComparison.Ordinal);
+
+        JObject manifest = JObject.Parse(ReadEntry(archive, "manifest.json"));
+        Assert.Equal("AudioPilot", manifest["App"]?.Value<string>());
+        Assert.Equal("redacted", manifest["RedactionMode"]?.Value<string>());
+        Assert.False(manifest["PartialExport"]?.Value<bool>());
+        Assert.Contains(manifest["Entries"]!.Children(), entry => entry["ArchiveEntry"]?.Value<string>() == "manifest.json");
+    }
+
+    [Fact]
+    public void ExportBundle_IncludeSensitive_WritesRawLogs()
+    {
+        using var directory = new TestScopedDirectory(nameof(ExportBundle_IncludeSensitive_WritesRawLogs));
+        File.WriteAllText(Path.Combine(directory.Root, AppConstants.Files.LogFileName), @"Opened C:\Users\Arman\Music\track.mp3 for routine 'Office WiFi'.");
+
+        string zipPath = Path.Combine(directory.Root, "bundle-sensitive.zip");
+        DiagnosticBundleExportService.ExportBundle(directory.Root, zipPath, CreatePayloads(), includeSensitive: true);
+
+        using ZipArchive archive = ZipFile.OpenRead(zipPath);
+        string logContent = ReadEntry(archive, "logs/AudioPilot.log");
+        Assert.Contains(@"C:\Users\Arman\Music\track.mp3", logContent, StringComparison.Ordinal);
+        Assert.Contains("Office WiFi", logContent, StringComparison.Ordinal);
+
+        JObject manifest = JObject.Parse(ReadEntry(archive, "manifest.json"));
+        Assert.Equal("sensitive", manifest["RedactionMode"]?.Value<string>());
+    }
+
+    [Fact]
+    public void ExportBundle_WhenLogsAreMissing_ReturnsPartialBundleInsteadOfFailing()
+    {
+        using var directory = new TestScopedDirectory(nameof(ExportBundle_WhenLogsAreMissing_ReturnsPartialBundleInsteadOfFailing));
+        string zipPath = Path.Combine(directory.Root, "bundle.zip");
+
+        DiagnosticBundleExportResult result = DiagnosticBundleExportService.ExportBundle(directory.Root, zipPath, CreatePayloads(), includeSensitive: false);
+
+        Assert.True(result.PartialExport);
+        Assert.Contains(result.Entries, entry => entry.Status == "missing" && entry.ArchiveEntry == "logs/");
+
+        using ZipArchive archive = ZipFile.OpenRead(zipPath);
+        JObject manifest = JObject.Parse(ReadEntry(archive, "manifest.json"));
+        Assert.True(manifest["PartialExport"]?.Value<bool>());
+    }
+
+    private static DiagnosticBundlePayloads CreatePayloads()
+    {
+        return new DiagnosticBundlePayloads(
+            StatusJson: """{"status":"ok"}""",
+            HistoryJson: """{"entries":[]}""",
+            MediaStatusJson: """{"available":false}""",
+            ConfigValidationJson: """{"isValid":true}""");
+    }
+
+    private static string ReadEntry(ZipArchive archive, string name)
+    {
+        ZipArchiveEntry entry = archive.GetEntry(name) ?? throw new InvalidOperationException($"Missing archive entry {name}.");
+        using Stream stream = entry.Open();
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
+    }
+}

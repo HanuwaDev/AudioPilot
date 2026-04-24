@@ -1,0 +1,34 @@
+name: 'Setup .NET Solution'
+description: 'Sets up .NET, restores solution dependencies, and optionally builds the solution'
+
+inputs:
+  configuration:
+    description: 'Build configuration (Debug/Release)'
+    required: false
+    default: 'Release'
+  build:
+    description: 'Whether to run dotnet build after restore'
+    required: false
+    default: 'false'
+
+runs:
+  using: composite
+  steps:
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v5
+      with:
+        dotnet-version: 10.0.x
+        cache: true
+        cache-dependency-path: |
+          **/packages.lock.json
+          Directory.Packages.props
+          global.json
+
+    - name: Restore
+      shell: pwsh
+      run: dotnet restore AudioPilot.sln --locked-mode
+
+    - name: Build
+      if: inputs.build == 'true'
+      shell: pwsh
+      run: dotnet build AudioPilot.sln --configuration ${{ inputs.configuration }} --no-restore

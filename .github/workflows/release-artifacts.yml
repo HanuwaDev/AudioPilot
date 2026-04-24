@@ -1,0 +1,409 @@
+name: Release Artifacts
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+  artifact-metadata: write
+
+concurrency:
+  group: release-artifacts-${{ github.ref }}
+  cancel-in-progress: false
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 1.0.0). Leave empty to use csproj version."
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release-gate-unit-tests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET Solution
+        uses: ./.github/actions/setup-dotnet-solution
+        with:
+          configuration: Release
+          build: true
+
+      - name: Release gate tests (unit)
+        shell: pwsh
+        run: ./scripts/run-tests.ps1 -Category unit -DotnetTestArgs @("--nologo", "--configuration", "Release", "--no-build")
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-testresults-unit-failed-${{ github.run_id }}
+          path: artifacts/testresults/unit
+          if-no-files-found: ignore
+          retention-days: 14
+
+  release-gate-integration-tests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET Solution
+        uses: ./.github/actions/setup-dotnet-solution
+        with:
+          configuration: Release
+          build: true
+
+      - name: Release gate tests (integration)
+        shell: pwsh
+        env:
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          AUDIOPILOT_TEST_OUTPUT_DEVICE_A: ${{ secrets.AUDIOPILOT_TEST_OUTPUT_DEVICE_A }}
+          AUDIOPILOT_TEST_OUTPUT_DEVICE_B: ${{ secrets.AUDIOPILOT_TEST_OUTPUT_DEVICE_B }}
+          AUDIOPILOT_TEST_INPUT_DEVICE_A: ${{ secrets.AUDIOPILOT_TEST_INPUT_DEVICE_A }}
+          AUDIOPILOT_TEST_INPUT_DEVICE_B: ${{ secrets.AUDIOPILOT_TEST_INPUT_DEVICE_B }}
+        run: |
+          $isTagRelease = $env:RELEASE_REF_TYPE -eq "tag"
+          $isSelfHostedRunner = $env:RUNNER_ENVIRONMENT -eq "self-hosted"
+          $env:AUDIOPILOT_REQUIRE_INTEGRATION_HARDWARE = if ($isSelfHostedRunner) { "1" } else { "0" }
+
+          $required = @(
+            "AUDIOPILOT_TEST_OUTPUT_DEVICE_A",
+            "AUDIOPILOT_TEST_OUTPUT_DEVICE_B",
+            "AUDIOPILOT_TEST_INPUT_DEVICE_A",
+            "AUDIOPILOT_TEST_INPUT_DEVICE_B"
+          )
+
+          $missing = @()
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              $missing += $name
+            }
+          }
+
+          if ($missing.Count -eq 0) {
+            try {
+              ./scripts/validate-release-hardware.ps1 -Configuration Release -NoBuild -Strict:$isSelfHostedRunner
+              $env:AUDIOPILOT_RUN_INTEGRATION = "1"
+              if ($isSelfHostedRunner) {
+                Write-Host "Hardware integration gate enabled with strict enforcement on self-hosted runner."
+              }
+              else {
+                Write-Host "Hardware integration checks enabled after device-id preflight validation."
+              }
+            }
+            catch {
+              if ($isSelfHostedRunner) {
+                throw
+              }
+
+              $env:AUDIOPILOT_RUN_INTEGRATION = "0"
+              Write-Host "::warning::Hardware integration gate disabled for this non-tag run because device-id preflight failed: $($_.Exception.Message)"
+            }
+          }
+          else {
+            $env:AUDIOPILOT_RUN_INTEGRATION = "0"
+            if ($isTagRelease) {
+              Write-Host "::warning::Hardware integration gate skipped for tag release because no self-hosted hardware runner is configured (missing secrets: $($missing -join ', ')). Release validation will continue with software-only tests."
+            }
+            else {
+              Write-Host "::warning::Hardware integration gate skipped for non-tag run (missing secrets: $($missing -join ', ')). Configure these secrets on a hardware-capable runner to enable full integration gate."
+            }
+          }
+
+          ./scripts/run-tests.ps1 -Category integration -DotnetTestArgs @("--nologo", "--configuration", "Release", "--no-build")
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-testresults-integration-failed-${{ github.run_id }}
+          path: artifacts/testresults/integration
+          if-no-files-found: ignore
+          retention-days: 14
+
+  release-gate-stress-tests:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET Solution
+        uses: ./.github/actions/setup-dotnet-solution
+        with:
+          configuration: Release
+          build: true
+
+      - name: Release gate tests (stress)
+        shell: pwsh
+        run: ./scripts/run-tests.ps1 -Category stress -DotnetTestArgs @("--nologo", "--configuration", "Release", "--no-build")
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-testresults-stress-failed-${{ github.run_id }}
+          path: artifacts/testresults/stress
+          if-no-files-found: ignore
+          retention-days: 14
+
+  publish-profiles:
+    needs:
+      - release-gate-unit-tests
+      - release-gate-integration-tests
+      - release-gate-stress-tests
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: FrameworkDependent-win-arm64
+          - profile: FrameworkDependent-win-x64
+          - profile: FrameworkDependent-win-x86
+          - profile: SelfContained-win-arm64
+          - profile: SelfContained-win-x64
+          - profile: SelfContained-win-x86
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+          cache: true
+          cache-dependency-path: |
+            **/packages.lock.json
+            Directory.Packages.props
+            global.json
+
+      - name: Publish release profile
+        shell: pwsh
+        run: |
+          $profile = "${{ matrix.profile }}"
+          ./scripts/publish-release-profiles.ps1 -TargetProfile $profile -Configuration Release
+
+      - name: Upload published profile output
+        uses: actions/upload-artifact@v7
+        with:
+          name: publish-${{ matrix.profile }}
+          path: artifacts/publish
+          if-no-files-found: error
+
+  build-msi-installers:
+    needs:
+      - release-gate-unit-tests
+      - release-gate-integration-tests
+      - release-gate-stress-tests
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x64
+            runSmoke: true
+          - platform: arm64
+            runSmoke: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET Solution
+        uses: ./.github/actions/setup-dotnet-solution
+        with:
+          configuration: Release
+
+      - name: Restore MSI installer project
+        shell: pwsh
+        run: |
+          dotnet restore ".\AudioPilot.Installer\AudioPilot.Installer.wixproj" --locked-mode
+          if ($LASTEXITCODE -ne 0) {
+            throw "Restore failed for AudioPilot.Installer.wixproj"
+          }
+
+      - name: Build MSI installer
+        shell: pwsh
+        run: |
+          $platform = "${{ matrix.platform }}"
+          Write-Host "=== Building MSI: $platform ==="
+          dotnet build ".\AudioPilot.Installer\AudioPilot.Installer.wixproj" -c Release -p:Platform=$platform --no-restore --nologo
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSI build failed for platform $platform"
+          }
+
+      - name: Smoke test x64 MSI install and upgrade
+        if: matrix.runSmoke
+        shell: pwsh
+        run: |
+          $versionInput = "${{ github.event.inputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($versionInput)) {
+            if ("${{ github.ref_type }}" -eq "tag") {
+              $versionInput = "${{ github.ref_name }}".TrimStart('v')
+            }
+            else {
+              [xml]$versionProps = Get-Content ".\Version.props" -Raw
+              $versionInput = $versionProps.Project.PropertyGroup.AudioPilotVersion | Select-Object -First 1
+            }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($versionInput)) {
+            throw "Unable to resolve release version for MSI smoke test."
+          }
+
+          $baselineVersion = "0.9.0"
+          if ($baselineVersion -eq $versionInput) {
+            throw "Baseline MSI version must differ from the release version."
+          }
+
+          $smokeRoot = Join-Path $env:RUNNER_TEMP "audio-pilot-msi-smoke"
+          New-Item -ItemType Directory -Force -Path $smokeRoot | Out-Null
+
+          $releaseMsiPath = ".\AudioPilot.Installer\bin\x64\Release\AudioPilot-$versionInput-x64.msi"
+          $preservedReleaseMsiPath = Join-Path $smokeRoot "AudioPilot-$versionInput-x64.msi"
+          Copy-Item -LiteralPath $releaseMsiPath -Destination $preservedReleaseMsiPath -Force
+
+          dotnet build ".\AudioPilot.Installer\AudioPilot.Installer.wixproj" -c Release -p:Platform=x64 -p:AppVersion=$baselineVersion --no-restore --nologo
+          if ($LASTEXITCODE -ne 0) {
+            throw "Baseline MSI build failed for version $baselineVersion"
+          }
+
+          ./scripts/test-msi-smoke.ps1 `
+            -InstallMsiPath $preservedReleaseMsiPath `
+            -UpgradeFromMsiPath ".\AudioPilot.Installer\bin\x64\Release\AudioPilot-$baselineVersion-x64.msi" `
+            -ExpectedVersion $versionInput `
+            -InstallRoot (Join-Path $smokeRoot "install-root") `
+            -DataRoot (Join-Path $smokeRoot "data-root")
+
+          ./scripts/test-msi-smoke.ps1 `
+            -InstallMsiPath $preservedReleaseMsiPath `
+            -ExpectedVersion $versionInput `
+            -InstallRoot (Join-Path $smokeRoot "clean-uninstall-root") `
+            -DataRoot (Join-Path $smokeRoot "clean-data-root") `
+            -CleanUninstall
+
+          Copy-Item -LiteralPath $preservedReleaseMsiPath -Destination $releaseMsiPath -Force
+          Remove-Item -LiteralPath ".\AudioPilot.Installer\bin\x64\Release\AudioPilot-$baselineVersion-x64.msi" -Force -ErrorAction SilentlyContinue
+
+      - name: Upload MSI outputs
+        uses: actions/upload-artifact@v7
+        with:
+          name: installer-${{ matrix.platform }}
+          path: AudioPilot.Installer/bin
+          if-no-files-found: error
+
+  publish-and-package:
+    needs:
+      - publish-profiles
+      - build-msi-installers
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download published profile outputs
+        uses: actions/download-artifact@v8
+        with:
+          pattern: publish-*
+          path: artifacts/publish
+          merge-multiple: true
+
+      - name: Download MSI outputs
+        uses: actions/download-artifact@v8
+        with:
+          pattern: installer-*
+          path: AudioPilot.Installer/bin
+          merge-multiple: true
+
+      - name: Package release outputs
+        shell: pwsh
+        run: |
+          $versionInput = "${{ github.event.inputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($versionInput)) {
+            if ("${{ github.ref_type }}" -eq "tag") {
+              $tagVersion = "${{ github.ref_name }}".TrimStart('v')
+              ./scripts/package-release.ps1 -Version $tagVersion -Repository "${{ github.repository }}" -Clean
+            }
+            else {
+              ./scripts/package-release.ps1 -Repository "${{ github.repository }}" -Clean
+            }
+          }
+          else {
+            ./scripts/package-release.ps1 -Version $versionInput -Repository "${{ github.repository }}" -Clean
+          }
+
+      - name: Validate release integrity
+        shell: pwsh
+        run: |
+          ./scripts/validate-release-integrity.ps1 -ReleaseRoot "artifacts/release"
+
+      - name: Resolve release metadata paths
+        id: release-metadata
+        shell: pwsh
+        run: |
+          $sbom = Get-ChildItem -Path "artifacts/release" -Filter "*-sbom.spdx.json" | Select-Object -First 1
+          if ($null -eq $sbom) {
+            throw "SBOM artifact was not generated."
+          }
+
+          "sbom-path=$($sbom.FullName.Replace('\', '/'))" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Attest release artifact provenance
+        uses: actions/attest@v4
+        with:
+          subject-checksums: artifacts/release/SHA256SUMS.txt
+
+      - name: Attest release SBOM
+        uses: actions/attest@v4
+        with:
+          subject-checksums: artifacts/release/SHA256SUMS.txt
+          sbom-path: ${{ steps.release-metadata.outputs.sbom-path }}
+
+      - name: Upload packaged artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: audio-pilot-release-artifacts
+          path: artifacts/release
+          if-no-files-found: error
+
+      - name: Generate release body
+        shell: pwsh
+        run: |
+          $versionInput = "${{ github.event.inputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($versionInput) -and "${{ github.ref_type }}" -eq "tag") {
+            $versionInput = "${{ github.ref_name }}".TrimStart('v')
+          }
+
+          ./scripts/release-body.ps1 -ChecksumsPath "artifacts/release/SHA256SUMS.txt" -ManifestPath "artifacts/release/release-manifest.json" -Version $versionInput -Repository "${{ github.repository }}" -OutputPath "artifacts/release-notes.md"
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v3
+        with:
+          draft: true
+          generate_release_notes: true
+          body_path: artifacts/release-notes.md
+          files: |
+            artifacts/release/SHA256SUMS.txt
+            artifacts/release/release-manifest.json
+            artifacts/release/*-sbom.spdx.json
+            artifacts/release/*-provenance.json
+            artifacts/release/*.zip
+            artifacts/release/*.msi

@@ -1,0 +1,48 @@
+# Visual Studio / VS Code
+.vs/
+.vscode/
+.venv/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Rider / ReSharper
+.idea/
+_ReSharper*/
+*.DotSettings.user
+
+# Build outputs
+**/bin/
+**/obj/
+**/*_wpftmp.csproj
+AudioPilot/AudioPilot.generated.manifest
+
+# Test outputs
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+
+# NuGet
+*.nupkg
+*.snupkg
+packages/
+.dotnet-cli/
+
+# Publish artifacts
+artifacts/
+
+# Personal local publish profile
+AudioPilot/Properties/PublishProfiles/FolderProfile.pubxml
+docs/LAUNCH_CHECKLIST.md
+
+# Logs and runtime local files
+**/AudioPilot.log
+**/settings.json
+**/DEVICES.txt
+
+# OS files
+.DS_Store
+Thumbs.db
+TODO.md

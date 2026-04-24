@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+	<PropertyGroup>
+		<OutputType>WinExe</OutputType>
+		<TargetFramework>net10.0-windows10.0.17763</TargetFramework>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		<UseWPF>true</UseWPF>
+		<RuntimeIdentifiers>win-x86;win-x64;win-arm64</RuntimeIdentifiers>
+		<ApplicationIcon>Images\sound.ico</ApplicationIcon>
+		<AppManifestTemplate>app.manifest</AppManifestTemplate>
+		<GeneratedApplicationManifestRoot Condition="'$(BaseIntermediateOutputPath)' != '' and $([System.IO.Path]::IsPathRooted('$(BaseIntermediateOutputPath)'))">$(BaseIntermediateOutputPath)</GeneratedApplicationManifestRoot>
+		<GeneratedApplicationManifestRoot Condition="'$(GeneratedApplicationManifestRoot)' == '' and '$(BaseIntermediateOutputPath)' != ''">$(MSBuildProjectDirectory)\$(BaseIntermediateOutputPath)</GeneratedApplicationManifestRoot>
+		<GeneratedApplicationManifestRoot Condition="'$(GeneratedApplicationManifestRoot)' == ''">$(MSBuildProjectDirectory)\obj\</GeneratedApplicationManifestRoot>
+		<GeneratedApplicationManifest>$(GeneratedApplicationManifestRoot)AudioPilot.generated.manifest</GeneratedApplicationManifest>
+		<ApplicationManifest>$(GeneratedApplicationManifest)</ApplicationManifest>
+		<Description>AudioPilot</Description>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<None Remove="Images\sound.ico" />
+	</ItemGroup>
+
+	<ItemGroup Condition="'$(Configuration)' == 'Release'">
+		<Content Include="..\LICENSE" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Hardcodet.NotifyIcon.Wpf" />
+		<PackageReference Include="Microsoft.Xaml.Behaviors.Wpf" />
+		<PackageReference Include="NAudio" />
+		<PackageReference Include="Newtonsoft.Json" />
+		<PackageReference Include="System.Management" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<Resource Include="Images\sound.ico" />
+	</ItemGroup>
+
+	<PropertyGroup>
+		<PublishCliHostNoRestore Condition="'$(PublishCliHostNoRestore)' == ''">false</PublishCliHostNoRestore>
+		<PublishCliHostNoRestoreArgument Condition="'$(PublishCliHostNoRestore)' == 'true'">--no-restore</PublishCliHostNoRestoreArgument>
+		<CliHostBuildIsolationKey Condition="'$(CliHostBuildIsolationKey)' == '' and '$(BuildIsolationKey)' != ''">$(BuildIsolationKey)</CliHostBuildIsolationKey>
+		<CliHostBuildIsolationArgument Condition="'$(CliHostBuildIsolationKey)' != ''">-p:BuildIsolationKey=$(CliHostBuildIsolationKey)</CliHostBuildIsolationArgument>
+	</PropertyGroup>
+
+	<Target Name="PublishCliHostAlongsideApp" AfterTargets="Publish">
+		<Exec
+			WorkingDirectory="$(MSBuildProjectDirectory)"
+			Command="dotnet publish ..\AudioPilot.CliHost\AudioPilot.CliHost.csproj -c $(Configuration) -r $(RuntimeIdentifier) --self-contained $(SelfContained) $(PublishCliHostNoRestoreArgument) -p:PublishSingleFile=false -p:PublishReadyToRun=$(PublishReadyToRun) $(CliHostBuildIsolationArgument) -p:PublishDir=&quot;$(PublishDir)&quot;" />
+	</Target>
+
+	<Target Name="PrepareVersionedAppManifest" BeforeTargets="BeforeBuild">
+		<MakeDir Directories="$(GeneratedApplicationManifestRoot)" />
+		<Copy SourceFiles="$(AppManifestTemplate)" DestinationFiles="$(GeneratedApplicationManifest)" />
+		<XmlPoke
+			XmlInputPath="$(GeneratedApplicationManifest)"
+			Query="/asmv1:assembly/asmv1:assemblyIdentity/@version"
+			Namespaces="&lt;Namespace Prefix='asmv1' Uri='urn:schemas-microsoft-com:asm.v1' /&gt;"
+			Value="$(AssemblyVersion)" />
+	</Target>
+</Project>

@@ -1,0 +1,257 @@
+name: CI
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      docs: ${{ steps.filter.outputs.docs }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Detect changed paths
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            code:
+              - 'AudioPilot/**'
+              - 'AudioPilot.CliHost/**'
+              - 'AudioPilot.Tests/**'
+              - 'scripts/**'
+              - '.github/quality/**'
+              - '.github/workflows/**'
+              - 'Directory.Build.props'
+              - 'Directory.Packages.props'
+              - 'Version.props'
+              - 'global.json'
+              - 'AudioPilot.sln'
+              - 'AudioPilot.Format.slnf'
+            docs:
+              - 'README.md'
+              - 'docs/**'
+              - 'CODE_OF_CONDUCT.md'
+              - '.github/ISSUE_TEMPLATE/**'
+              - '.github/pull_request_template.md'
+
+  build:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET Solution
+        uses: ./.github/actions/setup-dotnet-solution
+        with:
+          configuration: Release
+          build: true
+
+      - name: Validate release gate policy
+        shell: pwsh
+        run: ./scripts/validate-release-gate-policy.ps1
+
+  test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET Solution
+        uses: ./.github/actions/setup-dotnet-solution
+        with:
+          configuration: Release
+
+      - name: Audit static test-hook isolation
+        shell: pwsh
+        run: ./scripts/validate-test-isolation.ps1 -Strict
+
+      - name: Test
+        if: github.event_name == 'pull_request'
+        shell: pwsh
+        run: ./scripts/run-tests.ps1 -Category unit -DotnetTestArgs @("--nologo", "--configuration", "Release", "--no-restore")
+
+      - name: Upload test results on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-testresults-failed-${{ github.run_id }}
+          path: artifacts/testresults
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Test (with coverage)
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: ./scripts/run-tests.ps1 -Category unit -Coverage -DotnetTestArgs @("--nologo", "--configuration", "Release", "--no-restore")
+
+      - name: Enforce coverage baseline
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          $policyPath = ".github/quality/coverage-policy.json"
+          if (-not (Test-Path $policyPath)) {
+            throw "Coverage policy file not found: $policyPath"
+          }
+
+          $policy = Get-Content -Raw -Path $policyPath | ConvertFrom-Json
+          [double]$minimumCoverage = [double]$policy.minimumCoveragePercent
+          [double]$ratchetStep = [double]$policy.ratchetStepPercent
+          [double]$nextTarget = [double]$policy.nextTargetPercent
+
+          if ($minimumCoverage -le 0) {
+            throw "Coverage policy minimumCoveragePercent must be > 0."
+          }
+
+          if ($nextTarget -lt $minimumCoverage) {
+            throw "Coverage policy invalid: nextTargetPercent ($nextTarget) is below minimumCoveragePercent ($minimumCoverage)."
+          }
+
+          $coverageFiles = Get-ChildItem "artifacts/testresults/coverage" -Recurse -Filter "*.cobertura.xml"
+          if ($coverageFiles.Count -eq 0) {
+            throw "Coverage report files were not generated."
+          }
+
+          [double]$totalLinesValid = 0
+          [double]$totalLinesCovered = 0
+          [double]$excludedGeneratedLines = 0
+
+          foreach ($file in $coverageFiles) {
+            [xml]$coverage = Get-Content -Raw -Path $file.FullName
+            foreach ($class in $coverage.coverage.packages.package.classes.class) {
+              $sourcePath = [string]$class.filename
+              $classLines = @($class.lines.line)
+
+              if ($sourcePath -match '[\\/]obj[\\/]') {
+                $excludedGeneratedLines += $classLines.Count
+                continue
+              }
+
+              foreach ($line in $classLines) {
+                $totalLinesValid++
+                if ([int]$line.hits -gt 0) {
+                  $totalLinesCovered++
+                }
+              }
+            }
+          }
+
+          if ($totalLinesValid -le 0) {
+            throw "Coverage reports did not contain valid line totals."
+          }
+
+          $coveragePercent = [Math]::Round(($totalLinesCovered / $totalLinesValid) * 100, 2)
+
+          Write-Host "Computed line coverage: $coveragePercent% (minimum required: $minimumCoverage%; ratchet step: +$ratchetStep; next target: $nextTarget%; excluded generated obj lines: $excludedGeneratedLines)"
+
+          if ($coveragePercent -lt $minimumCoverage) {
+            throw "Coverage baseline failed: $coveragePercent% is below $minimumCoverage%."
+          }
+
+          if ($coveragePercent -ge $nextTarget) {
+            throw "Coverage ratchet threshold reached: $coveragePercent% >= $nextTarget%. Update .github/quality/coverage-policy.json in this PR (raise minimumCoveragePercent and nextTargetPercent by at least ratchetStepPercent)."
+          }
+
+      - name: Upload test and coverage artifacts
+        if: always() && github.event_name == 'push'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-testresults-coverage-${{ github.run_id }}
+          path: artifacts/testresults/coverage
+          if-no-files-found: error
+          retention-days: 14
+
+  benchmark-readytorun:
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && github.event_name == 'push'
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup .NET Solution
+        uses: ./.github/actions/setup-dotnet-solution
+        with:
+          configuration: Release
+
+      - name: Benchmark ReadyToRun publish
+        shell: pwsh
+        run: ./scripts/benchmark-readytorun.ps1 -Configuration Release
+
+      - name: Upload ReadyToRun benchmark artifact
+        if: always() && hashFiles('artifacts/benchmarks/readytorun/summary.*') != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-readytorun-benchmark-${{ github.run_id }}
+          path: |
+            artifacts/benchmarks/readytorun/summary.json
+            artifacts/benchmarks/readytorun/summary.md
+          if-no-files-found: error
+          retention-days: 14
+
+  format:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET Solution
+        uses: ./.github/actions/setup-dotnet-solution
+        with:
+          configuration: Release
+
+      - name: Scoped style check (changed files)
+        if: github.event_name == 'pull_request'
+        shell: pwsh
+        run: ./scripts/check-format-changed-files.ps1
+
+      - name: Format check
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: ./scripts/validate-format.ps1 -Action check
+
+  docs-links:
+    needs: changes
+    if: needs.changes.outputs.docs == 'true' || needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Validate docs links
+        shell: pwsh
+        run: ./scripts/validate-doc-links.ps1

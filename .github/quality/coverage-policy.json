@@ -1,0 +1,7 @@
+{
+  "minimumCoveragePercent": 75,
+  "ratchetStepPercent": 5,
+  "nextTargetPercent": 80,
+  "ratchetCadence": "per release milestone",
+  "lastUpdated": "2026-05-12"
+}
